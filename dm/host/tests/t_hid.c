@@ -114,6 +114,55 @@ static void t_npads(void) {
     CHECK(info[0] == 2 && info[1] == NPAD_HANDHELD, "handheld: the applet selects the handheld controller");
 }
 
+// Four controllers of one model on one device (the iOS front end, DmGamepad.m, as front_mac.m): slots from pad_slots.h published with dm_pad_players, each player's input on its
+// own npad, the touch gamepad (dm_input_set) on player 1 only, a disconnect that renumbers nobody and releases what was held, and a reconnect into the freed slot
+static void t_coop4(void) {
+    static const uint32_t four[] = {0, 1, 2, 3, NPAD_HANDHELD};
+    static const uint64_t btn[4] = {DM_BTN_A, DM_BTN_B, DM_BTN_X, DM_BTN_Y};
+    for (g_mode = 0; g_mode < 2; g_mode++) {   // handheld (player 1 on Handheld), then docked
+        pad_slots s; memset(&s, 0, sizeof s);
+        static char pad[5];   // five controllers, the same name: distinct owners
+        ids(four, 5);
+        for (int i = 0; i < 4; i++) CHECK(pad_slot_take(&s, &pad[i], "Xbox Wireless Controller") == i, "four controllers of one model: players 1..4");
+        dm_pad_players(pad_slot_mask(&s));
+        for (int i = 0; i < 4; i++) CHECK(h_hid_GetStyle(&(uint32_t){dm_player_npad(i)}) == (i || g_mode ? STYLE_FULLKEY : STYLE_HANDHELD), "each player connected on its npad");
+        for (int i = 0; i < 4; i++) dm_pad_set_player(i, btn[i], 1000 * (i + 1), 0, 0, 0);
+        dm_input_set(DM_BTN_ZL, 0, 0, 0, 0);   // the touch gamepad
+        uint32_t st = g_mode ? STYLE_FULLKEY : STYLE_HANDHELD;
+        CHECK(buttons_of(dm_player_npad(0), st) == (DM_BTN_A | DM_BTN_ZL), "player 1: its controller and the touch gamepad");
+        for (int i = 1; i < 4; i++) CHECK(buttons_of(dm_player_npad(i), STYLE_FULLKEY) == btn[i] && lx_of(dm_player_npad(i)) == 1000 * (i + 1), "players 2..4 read only their own controller");
+        dm_input_set(0, 0, 0, 0, 0);
+
+        // Player 2 goes away holding B: released, players 3 and 4 keep their npads and input
+        CHECK(pad_slot_free(&s, &pad[1]) == 1, "player 2's controller disconnects");
+        dm_pad_set_player(1, 0, 0, 0, 0, 0); dm_pad_players(pad_slot_mask(&s));
+        CHECK(h_hid_GetStyle(&(uint32_t){1}) == 0 && buttons_of(1, STYLE_FULLKEY) == 0, "No2 disconnected, nothing held");
+        CHECK(buttons_of(2, STYLE_FULLKEY) == DM_BTN_X && buttons_of(3, STYLE_FULLKEY) == DM_BTN_Y, "players 3 and 4 not renumbered");
+        CHECK(!(buttons_of(dm_player_npad(0), st) & DM_BTN_B), "player 2's B does not reach player 1");
+        CHECK(pad_slot_take(&s, &pad[4], "Xbox Wireless Controller") == 1, "a controller of the same model reconnects into player 2");
+        dm_pad_players(pad_slot_mask(&s)); dm_pad_set_player(1, DM_BTN_R, 0, 0, 0, 0);
+        CHECK(h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY && buttons_of(1, STYLE_FULLKEY) == DM_BTN_R, "player 2 back on No2");
+        CHECK(buttons_of(2, STYLE_FULLKEY) == DM_BTN_X, "player 3 unaffected by the reconnect");
+        dm_pad_set_player(1, DM_BTN_PLUS, 0, 0, 0, 0); pad_slot_free(&s, &pad[4]); dm_pad_players(pad_slot_mask(&s));   // pressed and gone before the game read it
+        pad_slot_take(&s, &pad[1], "Xbox Wireless Controller"); dm_pad_players(pad_slot_mask(&s));
+        CHECK(buttons_of(1, STYLE_FULLKEY) == 0, "a press the game never read does not come back with the reconnect");
+        for (int i = 0; i < 4; i++) dm_pad_set_player(i, 0, 0, 0, 0, 0);
+        for (int i = 0; i < 4; i++) buttons_of(dm_player_npad(i), i || g_mode ? STYLE_FULLKEY : STYLE_HANDHELD);   // drain the latches
+        dm_pad_players(0);
+    }
+    // Up to eight: an eight-player game gets eight independent players
+    pad_slots s; memset(&s, 0, sizeof s); static char eight[DM_PLAYERS];
+    g_mode = 1; ids((const uint32_t[]){0, 1, 2, 3, 4, 5, 6, 7, NPAD_HANDHELD}, 9);
+    for (int i = 0; i < DM_PLAYERS; i++) pad_slot_take(&s, &eight[i], "Pro Controller");
+    dm_pad_players(pad_slot_mask(&s));
+    for (int i = 0; i < DM_PLAYERS; i++) dm_pad_set_player(i, 1u << i, 0, 0, 0, 0);
+    int ok = 1; for (int i = 0; i < DM_PLAYERS; i++) ok &= buttons_of((uint32_t)i, STYLE_FULLKEY) == 1u << i;
+    CHECK(ok, "eight players, eight independent inputs");
+    for (int i = 0; i < DM_PLAYERS; i++) dm_pad_set_player(i, 0, 0, 0, 0, 0);
+    for (int i = 0; i < DM_PLAYERS; i++) buttons_of((uint32_t)i, STYLE_FULLKEY);
+    dm_pad_players(0);
+}
+
 static dm_haptic_state vibration[DM_PLAYERS];
 static int vibration_calls;
 static void vibration_sink(dm_haptic_state s) { vibration[s.player] = s; vibration_calls++; }
@@ -210,6 +259,7 @@ int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
     t_npads();
+    t_coop4();
     t_vibration();
     t_rumble_log();
     printf("hid players: %d checks, %d failed\n", checks, fails);

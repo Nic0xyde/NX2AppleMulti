@@ -216,7 +216,7 @@ void dm_pad_players(uint32_t mask) {
     mask = (mask | 1u) & ((1u << DM_PLAYERS) - 1);
     uint32_t old = atomic_exchange(&g_players, mask);
     for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1) {
-        if (!(mask >> p & 1)) dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
+        if (!(mask >> p & 1)) { dm_pad_set_player(p, 0, 0, 0, 0, 0); atomic_store(&g_pad_latch[p], 0); }   // a controller that went away leaves nothing pressed, nor a press the game has not read
         if (atomic_load(&g_ids_supported) & id_bit((uint32_t)p)) style_changed((uint32_t)p);
     }
     note_merged();
@@ -267,7 +267,8 @@ HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "supported controller ids; 
     if (atomic_exchange(&g_ids_supported, m) == m) return;
     for (int p = 0; p < DM_PLAYERS; p++) dm_haptics_clear(p);
     LOG("hid supported controller ids %#x (bit n: No n+1, bit 8 Handheld, bit 9 Other)", m);
-    for (int p = 1; p < DM_PLAYERS; p++) if ((uint32_t)reported(p) != (was >> p & 1)) style_changed((uint32_t)p);
+    // a player that is reported from now on starts with no press edge latched while the game did not read it (a fifth controller pressed in a game for four)
+    for (int p = 1; p < DM_PLAYERS; p++) if ((uint32_t)reported(p) != (was >> p & 1)) { atomic_store(&g_pad_latch[p], 0); style_changed((uint32_t)p); }
     note_merged();
 }
 static uint32_t g_styles_supported = 0xffffffffu;

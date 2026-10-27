@@ -222,6 +222,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** the host now signals it once when it is bound for a connected controller, and again when a player's controller connects or goes away.
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md) (SDK 8.2.0).
 
+### Every iOS controller plays player 1
+
+- **Symptom:** on the iPhone or iPad, with two or more controllers connected, all of them move player 1; a local co-op game never sees player 2 (no `controller '…' connected: player 2` line in `Documents/log.txt`). `DM_PAD_MERGE=0` in `Documents/env.txt` changes nothing.
+- **Cause:** the iOS front end (`DmGamepad.m` `read_pad`) wrote every controller into one shared state that it published with the touch gamepad through `dm_input_set`, player 1's path. The player slots (`pad_slots.h`) and `DM_PAD_MERGE` existed only in the Mac front end (`front_mac.m`), so the host's players 2..8 were never reported on iOS. Separately, `hle_hid.c` kept a player's latched press edges when its controller went away or stopped being reported, so a press the game had not read yet came back once on the next connect.
+- **Fix:** `DmGamepad.m` takes a slot per controller from `pad_slots.h`, as the Mac does: player 1 first, a controller that goes away frees its player without renumbering the others and is released, a reconnecting one gets its player back (by name), up to 8; each controller's input goes to `dm_pad_set_player`, the held slots to `dm_pad_players`, its rumble to its player (`haptics_apple.m`; player 1 falls back to the phone), and its player lights show players 1..4. The touch gamepad and the touch screen stay player 1's. `DM_PAD_MERGE=1` makes every controller player 1 on iOS too. `hle_hid.c` clears a player's latch when its controller goes away or its npad starts or stops being reported. `t_hid` covers four controllers of one model, their independent input, a disconnect and a reconnect, and eight players.
+- **Found on:** the iOS front end in general (reported on an iPad with several controllers; the fix is not yet checked on a device).
+
 ### Six-axis sensors
 
 - **Symptom:** motion moves never happen; shaking does nothing (Super Mario Odyssey: cap throws by shaking).
