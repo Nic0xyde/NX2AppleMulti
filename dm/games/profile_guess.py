@@ -219,7 +219,10 @@ def shader_sources(imports, glsl_src, glslc_mods, spirv, unreal_paks, trinity_pa
     NROs draw with NVN (materialsystem.nro and video_nx.nro import nvnBootstrapLoader) and call glslcCompile; the GLSLC outputs it ships (nxcontent/nvsb in game.zip) are read by the split"""
     vk = sum(1 for s in imports if re.match(r'vk[A-Z]', s) and s != 'vkGetInstanceProcAddr'); vulkan = bool(vk) and 'nvnBootstrapLoader' not in imports
     nro_nvn = 'nvnBootstrapLoader' in nro_imports
-    gl = not vulkan and not nro_nvn and 'eglCreateWindowSurface' in imports and bool(gl_names)
+    # a main that compiles its own GLSL with the GLSLC of a module it loads draws with NVN, whatever EGL it imports (Worms Armageddon: Anniversary Edition: main imports EGL and names
+    # glShaderSource, but its 4 GLSL sources go through glslcCompile in subsdk2 and every draw is NVN); Digimon Story Cyber Sleuth imports no glslcCompile
+    main_glslc = bool(glsl_src) and 'glslcCompile' in imports and bool(glslc_mods)
+    gl = not vulkan and not nro_nvn and not main_glslc and 'eglCreateWindowSurface' in imports and bool(gl_names)
     nro_glslc = not vulkan and not gl and 'glslcCompile' in nro_imports and bool(glslc_mods)
     return {'graphics': ('vulkan', f'main imports {vk} Vulkan functions and not nvnBootstrapLoader: the host\'s Vulkan layer (dm/gfx/vk/hle_vk.m)') if vulkan else
                         ('gl', 'main imports EGL and names glShaderSource: it renders with OpenGL and compiles GLSL, the host\'s GL layer (dm/gfx/gl/hle_gl.m)') if gl else

@@ -663,13 +663,16 @@ def bea_members(d, label):
     """NintendoWare Bezel Engine archive ('.bea', magic 'SCNE', a NintendoWare binary file of version 0x10100; Big Brain Academy: Brain vs. Brain keeps nearly all of RomFS in 603 of them):
     +0x20 u64 entry count, +0x28 u64 offset of the entry pointer array (u64 each), each pointing at a 0x30-byte 'ASST' entry {+0x10 u16 kind, u16 alignment shift, u32 stored length,
     u32 length, +0x20 u64 data offset, +0x28 u64 name offset (u16 length + the path)}. Every entry of the game's 7,665 is one zstd frame (kind 2, and 258 for the one sound project),
-    even the two whose stored length equals their length, so the frame magic decides. → (path, data) of each entry"""
+    even the two whose stored length equals their length, so the frame magic decides. Super Mario Party Jamboree's newer version: +0x28 is the first entry and the pointer array is at +0x30,
+    and its entries are 0x48 bytes (the length at ASST +4), the data and name offsets at +0x38. → (path, data) of each entry"""
     n, arr = struct.unpack_from('<QQ', d, 0x20)
+    if d[arr:arr + 4] == b'ASST': arr = struct.unpack_from('<Q', d, 0x30)[0]
     zstd = None
     for i in range(n):
         o = struct.unpack_from('<Q', d, arr + 8 * i)[0]
         if d[o:o + 4] != b'ASST': red(f'{label}: entry {i} @{o:#x} is not an ASST entry')
-        csz, usz, off, nm = struct.unpack_from('<II4xQQ', d, o + 0x14)
+        csz, usz = struct.unpack_from('<II', d, o + 0x14)
+        off, nm = struct.unpack_from('<QQ', d, o + (0x38 if struct.unpack_from('<I', d, o + 4)[0] == 0x48 else 0x20))
         path = d[nm + 2:nm + 2 + struct.unpack_from('<H', d, nm)[0]].decode('utf-8', 'replace')
         data = d[off:off + csz]
         if data[:4] == ZSTD_MAGIC:
@@ -1802,7 +1805,7 @@ def unzs(path):
     """A zstd file decompressed: frames without a dictionary through the zstd command as before, frames that name one with that dictionary from ZDICTS"""
     d = open(path, 'rb').read()
     did = zs_dict_id(d)
-    if not did: return subprocess.run(['zstd', '-d', '-c', '-q', path], capture_output=True, check=True).stdout
+    if not did: return subprocess.run(['zstd', '-d', '-c', '-q'], input=d, capture_output=True, check=True).stdout   # through stdin: path can be inside a RomFS image (romfs.open), which the command cannot open
     return unzs_dict(d, did, path)
 
 def frame_size(f):

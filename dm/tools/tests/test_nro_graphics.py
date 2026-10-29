@@ -29,6 +29,11 @@ class NroGraphics(unittest.TestCase):
         self.assertEqual(s['graphics'][0], 'gl')
         self.assertFalse(s['glslc_capture'][0])
 
+    def test_main_glslc_beats_egl(self):   # Worms Armageddon: Anniversary Edition: EGL imported and glShaderSource named, but its GLSL goes through glslcCompile (subsdk2)
+        s = pg.shader_sources(SDL_MAIN | {'nvnBootstrapLoader', 'glslcCompile'}, 4, ['subsdk2'], 0, 0, gl_names=2)
+        self.assertEqual(s['graphics'][0], 'nvn')
+        self.assertTrue(s['glslc_capture'][0])
+
     def test_nro_glslc_needs_a_module_that_defines_it(self):
         s = pg.shader_sources(set(), 0, [], 0, 0, nro_imports={'nvnBootstrapLoader', 'glslcCompile'})
         self.assertEqual(s['graphics'][0], 'nvn')

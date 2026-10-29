@@ -73,7 +73,7 @@ typedef struct {
     int w, h, fmt_sent, started, in_eos;          // in_eos: an end-of-stream packet was sent; no input until Flush / Stop (h_movie_AcqIn)
     uint8_t *in[MD_NIN]; int infree[MD_NIN], ninfree;                     // queue of free input indices
     int inown[MD_NIN]; uint64_t instale[MD_NIN];                          // inown: acquired by the client and not sent yet; instale: when a Flush / Stop found it held (the client may still send it), 0 if not
-    struct { int used, pic; int64_t pts; uint32_t flags; uint8_t *frm; size_t cap, bytes; } out[MD_NOUT];   // pic: frm holds a decoded picture (audio: bytes of PCM); cap: bytes in frm
+    struct { int used, own, pic; int64_t pts; uint32_t flags; uint8_t *frm; size_t cap, bytes; } out[MD_NOUT];   // own: acquired by the client and not given back yet; pic: frm holds a decoded picture (audio: bytes of PCM); cap: bytes in frm
     int outq[MD_NOUT], noutq;                                             // queue of ready output indices
     struct { int in, off, size; int64_t pts; uint32_t flags; } pend[MD_NIN]; int npend;   // input packets waiting to be decoded (in arrival order)
     // Decoding: dmu lets only one guest thread take and decode packets at a time (packets enter libvpx in order); wmu / wcv hand one job to the host thread and wait for it
@@ -574,7 +574,7 @@ static void md_reset(mdec_t *d, int close) {
     for (int i = 0; i < MD_NIN; i++) { d->infree[i] = i; d->instale[i] = d->inown[i] ? now : 0; d->inown[i] = 0; }
     d->ninfree = MD_NIN; d->noutq = 0; d->npend = 0; d->avc_drain = 0; d->in_eos = 0;
     // a flush keeps each slot's last picture: the same game reads an output it acquired before the flush right after it (a black frame in the loop otherwise)
-    for (int i = 0; i < MD_NOUT; i++) { d->out[i].used = 0; if (close) d->out[i].pic = 0; }
+    for (int i = 0; i < MD_NOUT; i++) { d->out[i].used = d->out[i].own = 0; if (close) d->out[i].pic = 0; }
     pthread_mutex_unlock(&d->mu);
     pthread_mutex_unlock(&d->dmu);
 }
@@ -667,7 +667,7 @@ HLE_FORCE("_ZN5movie7Decoder24AcquireOutputBufferIndexEPiPlPjS1_", "movie decode
     int r = MD_NO_OUTPUT; *idx = -1; *left = 0;
     if (d->noutq && d->started) {
         int s = d->outq[0]; memmove(d->outq, d->outq + 1, --d->noutq * sizeof *d->outq);
-        *idx = s; *pts = d->out[s].pts; *flags = d->out[s].flags; *left = d->noutq; r = 0;
+        *idx = s; *pts = d->out[s].pts; *flags = d->out[s].flags; *left = d->noutq; r = 0; d->out[s].own = 1;
     }
     pthread_mutex_unlock(&d->mu);
     if (!r) MD_TRACE(d, 8, "AcquireOutputBufferIndex → index %d time %lld flags %#x left %d", *idx, (long long)*pts, *flags, *left);
@@ -715,6 +715,19 @@ HLE_FORCE("_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_", "movie decoder: output
     MD_TRACE(d, 11, "GetOutputBufferSize → %d (%d×%d)", *size, w, h);
     return 0;
 }
+static int md_release(mdec_t *d, int i) {
+    dm_host_mutex_lock(&d->mu);
+    // An index the client does not hold (given back by a native-texture GetOutputBuffer, or by a flush) is left alone: the slot may hold a newer picture already
+    if (!d->out[i].own) { pthread_mutex_unlock(&d->mu); MD_TRACE(d, 13, "ReleaseOutputBufferIndex index %d: not held by the client, ignored", i); return 0; }
+    d->out[i].used = d->out[i].own = 0; d->out[i].pic = 0;
+    int queued = d->npend, drain = d->avc_drain;
+    pthread_mutex_unlock(&d->mu);
+    MD_TRACE(d, 13, "ReleaseOutputBufferIndex index %d (%d packets queued%s)", i, queued, drain ? ", H.264 pictures draining" : "");
+    // An H.264 drain waits for a free slot too: AI: THE SOMNIUM FILES (Unity 2017.4) held all 16 video slots when its logo movie's end-of-stream packet came, the drain stopped
+    // with no packet queued, the last pictures and the end-of-stream flag never came out, and the game waited for the movie's end for good
+    if (queued || drain) md_pump(d);
+    return 0;
+}
 // Write one frame into the client buffer: the decoded picture, or a black frame (video range Y 16, UV 128) when there is none (an end-of-stream packet); a client texture keeps its last frame then
 // Native texture mode: the client Buffer's data pointer is the NVNtexture object itself (capacity given as 8; Metroid Dread main+0x226c98: the texture object embedded at +0x18 of a texture pool entry), plus the NVN device and a sync object (SetNvnDev / SetNvnSync).
 // In the SDK, NnCodecConsumer draws the decoded frame into that texture on the GPU and signals the sync when done; the host writes the texture storage on the CPU (as WriteTexels; the replay layer re-uploads dirty pages), and the sync counts as done once written
@@ -734,7 +747,9 @@ static int md_out_tex(mdec_t *d, int i, void *buf) {
     if (d->out[i].pic && d->out[i].frm) nvn_host_write_texture(tex, d->out[i].frm, w, h, (size_t)d->w * 4, NULL, NULL);
     void *sy = G.nvn_sync ? G.nvn_sync(buf) : NULL; if (sy && nvn_host_signal_sync(sy) && !d->red_dec++) LOG("[RED] movie: the buffer's sync object %p is not an NVNsync", sy);
     MD_TRACE(d, 12, "GetOutputBuffer index %d → texture %p (%d×%d format %#x)%s", i, tex, tw, th, f, d->out[i].pic ? "" : " (no picture: the texture keeps its last frame)");
-    return 0;
+    // The SDK gives the output back here (DecoderImpl::CopyOutputBufferToClientTextureAndRelease): Super Mario Party Jamboree never releases the frames it draws, only those it skips;
+    // with all 16 slots held its opening movie froze on its first second
+    return md_release(d, i);
 }
 HLE_FORCE("_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE", "movie decoder: get a frame", int, h_movie_GetOut, void **self, int i, void *buf) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
@@ -770,14 +785,6 @@ HLE_FORCE("_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferEPNS_9MediaDataE", "mo
 HLE_FORCE("_ZN5movie7Decoder24ReleaseOutputBufferIndexEi", "movie decoder: release an output index (decodes queued packets again)", int, h_movie_RelOut, void **self, int i) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (i < 0 || i >= d->nout) return 0x100b;
-    dm_host_mutex_lock(&d->mu);
-    d->out[i].used = 0; d->out[i].pic = 0;
-    int queued = d->npend, drain = d->avc_drain;
-    pthread_mutex_unlock(&d->mu);
-    MD_TRACE(d, 13, "ReleaseOutputBufferIndex index %d (%d packets queued%s)", i, queued, drain ? ", H.264 pictures draining" : "");
-    // An H.264 drain waits for a free slot too: AI: THE SOMNIUM FILES (Unity 2017.4) held all 16 video slots when its logo movie's end-of-stream packet came, the drain stopped
-    // with no packet queued, the last pictures and the end-of-stream flag never came out, and the game waited for the movie's end for good
-    if (queued || drain) md_pump(d);
-    return 0;
+    return md_release(d, i);
 }
 HLE_FORCE("_ZN5movie7Decoder12GetLastErrorEv", "movie decoder: last error (none)", int, h_movie_LastErr, void **self) { (void)self; return 0; }

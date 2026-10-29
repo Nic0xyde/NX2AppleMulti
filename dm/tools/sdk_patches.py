@@ -127,6 +127,13 @@ CUTS = {
     (0x13bee0, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x13c03c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
+  # Super Mario Party Jamboree 1.0.0 (v0) sdk (SDK 17.5.9; the AddressRegionManager at the offsets of Ace Attorney's SDK 17.5.3 build): Absolum's cuts. nninitStartup takes malloc's 2 GB
+  # region and a second StandardAllocator region (1 GB and 3 GB after the cuts in its patches.py); with the 1 GB node area and 1 GB alignment, malloc's region landed at +1.75 GB and the second did not fit
+  'fcd139127b9c99988c2613230db18e26': [
+    (0x139468, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x1394fc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x13965c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # SDK 15.3.2 sdk 8618895246b4 (Paper Mario: The Thousand-Year Door 1.0.1, Celeste 1.4.1.1; Celeste has no virtual address memory and never makes an address region): Absolum's cuts on this
   # build. The AddressRegionManager constructor is at sdk+0x12e0e0 (node area limit at +0x12e0f0, registered as occupied at +0x12e184) and VammManager::AllocateAddressRegion at sdk+0x12e1d0
   # aligns regions of 1 GB and more to 1 GB (+0x12e2e0). Measured with a 64 GB alias region: Paper Mario's malloc region was placed at the next 1 GB boundary after the 1 GB node area, 0.69 GB further

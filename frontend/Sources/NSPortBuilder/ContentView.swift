@@ -1935,10 +1935,13 @@ final class BuildModel: ObservableObject {
             return p.terminationStatus == 0
         }
         let vpy = venvPython()
-        if !FileManager.default.isExecutableFile(atPath: vpy) {
-            log += "$ \(base) -m venv \(venvDir)\n"
+        // A venv made by an older build from Apple's 3.9 is rebuilt rather than reused: its packages install, and the
+        // script then stops on "Direct RomFS image builds require Python 3.12 or newer"
+        let stale = pythonVersion(vpy).map { $0 < minPython } ?? false
+        if !FileManager.default.isExecutableFile(atPath: vpy) || stale {
+            log += "$ \(base) -m venv --clear \(venvDir)\n"
             try? FileManager.default.createDirectory(atPath: (venvDir as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-            guard run(base, ["-m", "venv", venvDir]) else { return (false, log + "venv creation failed\n") }
+            guard run(base, ["-m", "venv", "--clear", venvDir]) else { return (false, log + "venv creation failed\n") }
         }
         let pkgs = pipPackages(pythonVersion(vpy) ?? minPython).joined(separator: " ")
         log += "$ \(vpy) -m pip install \(pkgs)\n"
@@ -2004,7 +2007,7 @@ final class BuildModel: ObservableObject {
         // No system interpreter has the packages: the venv (existing, or created by 安装) is next.
         let vpy = venvPython()
         if FileManager.default.isExecutableFile(atPath: vpy) {
-            if importsOK(vpy) { return (vpy, true) }
+            if (pythonVersion(vpy).map { $0 >= minPython } ?? false) && importsOK(vpy) { return (vpy, true) }
             return (vpy, false)   // exists but incomplete: 安装 finishes it
         }
         return (fallback?.0 ?? vpy, false)
